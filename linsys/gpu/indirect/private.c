@@ -31,8 +31,13 @@ void SCS(accum_by_a)(const ScsMatrix *A, ScsLinSysWork *p, const scs_float *x,
 
 char *SCS(get_lin_sys_method)(const ScsMatrix *A, const ScsSettings *stgs) {
   char *str = (char *)scs_malloc(sizeof(char) * 128);
+#if GPU_TRANSPOSE_MAT > 0
+  sprintf(str, "sparse-indirect GPU /w atrans enabled, nnz in A = %li, CG tol ~ 1/iter^(%2.2f)",
+          (long)A->p[A->n], stgs->cg_rate);
+#else
   sprintf(str, "sparse-indirect GPU, nnz in A = %li, CG tol ~ 1/iter^(%2.2f)",
           (long)A->p[A->n], stgs->cg_rate);
+#endif
   return str;
 }
 
@@ -78,7 +83,12 @@ static void mat_vec(const ScsGpuMatrix *A, const ScsSettings *s,
   /* x and y MUST already be loaded to GPU */
   scs_float *tmp_m = p->tmp_m; /* temp memory */
   cudaMemset(tmp_m, 0, A->m * sizeof(scs_float));
-  SCS(_accum_by_a_gpu)(A, x, tmp_m, p->cusparse_handle);
+  //SCS(_accum_by_a_gpu)(A, x, tmp_m, p->cusparse_handle);
+#if GPU_TRANSPOSE_MAT > 0
+  SCS(_accum_by_atrans_gpu)(p->Agt, x, tmp_m, p->cusparse_handle);
+#else
+  SCS(_accum_by_a_gpu)(p->Ag, x, tmp_m, p->cusparse_handle);
+#endif
   cudaMemset(y, 0, A->n * sizeof(scs_float));
   SCS(_accum_by_atrans_gpu)(A, tmp_m, y, p->cusparse_handle);
   CUBLAS(axpy)(p->cublas_handle, A->n, &(s->rho_x), x, 1, y, 1);
@@ -289,7 +299,11 @@ scs_int SCS(solve_lin_sys)(const ScsMatrix *A, const ScsSettings *stgs,
   /* solves (I+A'A)x = b, s warm start, solution stored in b */
   cg_its = pcg(p->Ag, stgs, p, s, bg, Ag->n, MAX(cg_tol, CG_BEST_TOL));
   CUBLAS(scal)(p->cublas_handle, Ag->m, &neg_onef, &(bg[Ag->n]), 1);
+#if GPU_TRANSPOSE_MAT > 0
+  SCS(_accum_by_atrans_gpu)(p->Agt, bg, &(bg[Ag->n]), p->cusparse_handle);
+#else
   SCS(_accum_by_a_gpu)(Ag, bg, &(bg[Ag->n]), p->cusparse_handle);
+#endif
   cudaMemcpy(b, bg, (Ag->n + Ag->m) * sizeof(scs_float), cudaMemcpyDeviceToHost);
 
   if (iter >= 0) {
